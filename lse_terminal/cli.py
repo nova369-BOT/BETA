@@ -210,6 +210,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=7787)
     ap.add_argument("--no-browser", action="store_true",
                     help="don't open the browser (headless / server use)")
+    # The other half of that "explicit decision". Binding beyond loopback
+    # publishes endpoints that execute code and write files, so the host the
+    # clients will actually use has to be named rather than inferred; see
+    # lse_terminal/engine/access.py for the policy this feeds.
+    ap.add_argument("--trusted-host", action="append", default=[],
+                    metavar="HOST",
+                    help="serve this hostname when binding beyond loopback "
+                         "(repeatable; for a reverse proxy or tunnel)")
+    ap.add_argument("--allow-remote-exec", action="store_true",
+                    help="also let trusted non-loopback clients reach the "
+                         "code-executing endpoints")
     # Hidden re-entry: the AI rail's permission bridge (see
     # engine/approve_bridge.py). Spawned BY the claude CLI as an MCP server,
     # so it must branch before the heavy engine imports below.
@@ -247,9 +258,40 @@ def main(argv: list[str] | None = None) -> int:
         code.interact(banner=banner, local={"__name__": "__main__"}, exitmsg="")
         return 0
 
+    import os
+
     import uvicorn
 
+    from lse_terminal.engine import access
     from lse_terminal.engine.server import create_app
+
+    # Fail closed. A bind beyond loopback publishes endpoints that run code
+    # and hold the user's API key, and the engine has no per-request
+    # authentication, so exposure has to be something the operator states
+    # rather than something they discover. --host on its own is refused;
+    # naming the host is the acknowledgement. Before this check, `lset
+    # --host 0.0.0.0` silently handed a shell to anything that could reach
+    # the port, because the guard that was supposed to stop it keyed on the
+    # Host header, which any non-browser client sets freely.
+    trusted = set(access.trusted_hosts())
+    trusted.update(h.strip().lower() for h in args.trusted_host if h.strip())
+    if not access.is_loopback(args.host) and not trusted:
+        sys.stderr.write(
+            f"lset: refusing to bind {args.host!r} without --trusted-host.\n"
+            "\n"
+            "      This engine has no login, and a non-loopback bind serves\n"
+            "      endpoints that execute code and write files. If the bind is\n"
+            "      intended, name the host clients will use:\n"
+            f"\n          lset --host {args.host} --no-browser \\\n"
+            f"               --trusted-host <the hostname in the URL>\n"
+            "\n"
+            "      Add --allow-remote-exec only if those clients genuinely\n"
+            "      need code execution and the shell.\n")
+        return 2
+    if trusted:
+        os.environ["LSE_TERMINAL_TRUSTED_HOSTS"] = ",".join(sorted(trusted))
+    if args.allow_remote_exec:
+        os.environ["LSE_TERMINAL_ALLOW_REMOTE_EXEC"] = "1"
 
     url = f"http://{args.host}:{args.port}"
     if not args.no_browser:
@@ -258,6 +300,12 @@ def main(argv: list[str] | None = None) -> int:
         # mac/windows and would wrongly suppress the open there).
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     print(f"LSE Terminal -> {url}")
+    if not access.is_loopback(args.host):
+        # Loud on purpose: this is the line that says the process is no
+        # longer private to the machine, and it should be impossible to miss
+        # in a scrollback when something goes wrong later.
+        print(f"LSE Terminal WARNING: {access.describe_exposure(args.host, frozenset(trusted))}",
+              file=sys.stderr)
     uvicorn.run(create_app(), host=args.host, port=args.port, log_level="warning")
     return 0
 

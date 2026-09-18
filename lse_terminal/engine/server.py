@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from lse_terminal import __version__
 from lse_terminal.contracts import NotSupported, all_specs, compute
+from lse_terminal.engine import access
 from lse_terminal.engine import config as cfg
 from lse_terminal.engine.registry import Registry, load_builtins, load_plugins
 from lse_terminal.engine.user_indicators import TEMPLATE, UserIndicators
@@ -366,62 +367,95 @@ class LseBankImportIn(BaseModel):
     folder: str = ""
 
 
-class _LocalOnlyGuard:
-    """Reject browser cross-site and DNS-rebinding requests, engine-wide.
+class _AccessGuard:
+    """Decide which clients the engine will answer, and what they may reach.
 
-    The engine trusts the local machine (loopback bind, no auth). The one
-    local program that runs REMOTE code is the browser: any web page a user
-    visits can fire fetch()/WebSocket at 127.0.0.1 (localhost CSRF), and DNS
-    rebinding can resolve evil.com TO 127.0.0.1, which matters for every
-    endpoint and most of all the PTY websockets. Two header checks kill the
-    whole class without adding any friction for real local clients:
+    Two jobs, kept in one pass because they share the same headers.
 
-    - Host must be a loopback name. A rebound page's requests carry the
-      attacker's hostname, a tunnel or direct local call carries loopback.
-    - Origin, when present, must be a loopback origin. Browsers stamp the
-      true page origin on every cross-origin request and WebSocket and
-      pages cannot forge it; native processes (the agent CLIs, curl, MCP
-      clients, the stdio bridge) send no Origin at all. "null" (sandboxed
-      iframe / file://) is rejected.
+    The original job is unchanged: reject browser cross-site and DNS-rebinding
+    requests. Any web page a user visits can fire fetch()/WebSocket at
+    127.0.0.1 (localhost CSRF), and DNS rebinding can resolve evil.com TO
+    127.0.0.1, which matters for every endpoint and most of all the PTY
+    websockets. Checking that Host is loopback and that a present Origin names
+    a loopback host kills the whole class without adding friction for real
+    local clients -- native processes (the agent CLIs, curl, MCP clients, the
+    stdio bridge) send no Origin at all. "null" (sandboxed iframe / file://) is
+    rejected. The MCP spec requires exactly this Origin validation for
+    streamable HTTP servers; applied to the whole app because the exposure is
+    shared.
 
-    The MCP spec requires exactly this Origin validation for streamable
-    HTTP servers; applied to the whole app because the exposure is shared.
+    The second job exists because that check was never an access control. Host
+    is a header, and a non-browser client sets it to whatever it likes, so
+    binding beyond loopback used to mean "anyone who can reach the port gets a
+    shell". Non-loopback hosts must now be named by the operator, and even
+    named hosts are held to the read/data endpoints unless code execution is
+    opted into separately. See lse_terminal.engine.access for the policy; this
+    class only applies it.
+
     Raw ASGI (not BaseHTTPMiddleware) so websocket handshakes are covered.
     Hosted mode never installs this guard: there the public domain IS the
     legitimate Host/Origin and nginx fronts the app.
     """
 
-    _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
-
-    def __init__(self, app):
+    def __init__(self, app, trusted: frozenset[str] | None = None):
         self.app = app
+        # Resolved once at construction. The value is deployment config, and
+        # re-reading it per request would let a client's timing reveal changes
+        # and would make the guard's decision depend on process-wide mutable
+        # state mid-flight.
+        self.trusted = access.trusted_hosts() if trusted is None else trusted
 
-    @classmethod
-    def _hostname(cls, netloc: str) -> str:
-        netloc = netloc.strip().lower()
-        if netloc.startswith("["):          # [::1]:7799
-            return netloc[1:].split("]", 1)[0]
-        return netloc.rsplit(":", 1)[0] if ":" in netloc else netloc
+    def _refusal(self, scope) -> str:
+        """Why this request is refused, or "" when it is allowed.
 
-    @classmethod
-    def _allowed(cls, scope) -> bool:
-        hdrs = {}
+        Returning the reason rather than a bool keeps the response body honest
+        about which layer refused, which is the difference between an operator
+        fixing a proxy in a minute and guessing for an hour.
+        """
+        # Only http/websocket carry a client's headers. Lifespan (and anything
+        # else ASGI adds later) belongs to the server itself and is never a
+        # remote client, so it is not this guard's to refuse.
+        if scope.get("type") not in ("http", "websocket"):
+            return ""
+        hdrs: dict[bytes, bytes] = {}
         for k, v in scope.get("headers") or []:
             hdrs.setdefault(k, v)
-        host = cls._hostname(hdrs.get(b"host", b"").decode("latin1"))
-        if host not in cls._LOOPBACK:
-            return False
+        host = access.hostname(hdrs.get(b"host", b"").decode("latin1"))
+        if not access.is_trusted(host, self.trusted):
+            return ("local requests only: this engine serves loopback and "
+                    "explicitly named hosts "
+                    "(set LSE_TERMINAL_TRUSTED_HOSTS to allow a proxy host)")
+
         origin = hdrs.get(b"origin", b"").decode("latin1").strip().lower()
-        if not origin:
-            return True
-        from urllib.parse import urlsplit
-        try:
-            return cls._hostname(urlsplit(origin).netloc) in cls._LOOPBACK
-        except ValueError:
-            return False
+        if origin:
+            from urllib.parse import urlsplit
+            try:
+                origin_host = access.hostname(urlsplit(origin).netloc)
+            except ValueError:
+                return "unparseable Origin"
+            # Browsers cannot forge Origin, so this is the DNS-rebinding half:
+            # a rebound page carries the attacker's name here even though it
+            # resolved to us.
+            if not access.is_trusted(origin_host, self.trusted):
+                return "cross-site browser request refused"
+
+        if not access.is_loopback(host):
+            path = scope.get("path", "")
+            if access.is_local_only(path) and not access.allow_remote_exec():
+                return ("endpoint is local-only: it runs code, writes files or "
+                        "moves money, and is not served to non-loopback clients "
+                        "unless LSE_TERMINAL_ALLOW_REMOTE_EXEC=1")
+        return ""
+
+    def _allowed(self, scope) -> bool:
+        return not self._refusal(scope)
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] not in ("http", "websocket") or self._allowed(scope):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        reason = self._refusal(scope)
+        if not reason:
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
@@ -430,9 +464,8 @@ class _LocalOnlyGuard:
             return
         await send({"type": "http.response.start", "status": 403,
                     "headers": [(b"content-type", b"text/plain")]})
-        await send({"type": "http.response.body",
-                    "body": b"local requests only: this engine rejects "
-                            b"cross-site browser and non-loopback calls"})
+        await send({"type": "http.response.body", "body": reason.encode()})
+
 
 
 class _HostedRateLimit:
@@ -575,7 +608,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="LSE Terminal", version=__version__)
     if not hosted:
-        app.add_middleware(_LocalOnlyGuard)
+        app.add_middleware(_AccessGuard)
     else:
         # Public embed: no login by design, so a per-client
         # rate budget is what stops anyone hammering data, sim or uploads.
