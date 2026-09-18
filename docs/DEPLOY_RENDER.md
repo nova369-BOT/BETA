@@ -23,7 +23,7 @@ inventing one: **hosted mode** (`LSE_TERMINAL_HOSTED=1`). It:
 
 What it does **not** do is authenticate anyone. That is deliberate upstream and
 it is a product decision, not an oversight — but it means **do not put private
-data on a hosted instance.** Read [Limitations](#7-limitations-and-risks) before
+data on a hosted instance.** Read [Limitations](#8-limitations-and-risks) before
 going further.
 
 ### Two things to know before you invest time
@@ -44,17 +44,116 @@ going further.
 
 ---
 
-## 1. Push the repository
+## 1. Get the code onto the branch Render will build
 
-Render deploys from a Git remote. This repo's session branch is
-`arena/01a0b4ba-beta`; `render.yaml` is configured with `branch: main`, so
-either merge to `main` first or change that line.
+**This is the step that trips people up.** `render.yaml` sets `branch: main`,
+and Render reads `render.yaml` from the branch you pick when creating the
+Blueprint, then switches the service to whatever `branch:` says. If that branch
+does not contain the code, the build fails with a missing `pyproject.toml`
+(and the error does not mention branches).
+
+In this repository `main` currently holds **one file** (`LICENSE`); everything
+else — including `render.yaml` — is on `arena/01a0b4ba-beta`. So pick one:
 
 ```sh
-git push origin arena/01a0b4ba-beta:main     # or open a PR and merge
+# Option 1 (recommended): land the work on main
+git push origin arena/01a0b4ba-beta        # then open a PR and merge it
+
+# Option 2: build the session branch, and change branch: in render.yaml to
+#           arena/01a0b4ba-beta before applying the Blueprint
 ```
 
-## 2. Confirm the two non-obvious build requirements
+Merging to `main` is also what unlocks preview environments later, since those
+are created for pull requests *against the Blueprint's linked branch*.
+
+## 2. Preview it on Render, step by step
+
+Render uses the word "preview" for two different things, and which one you want
+decides whether you need to pay:
+
+| | What you get | Cost |
+| --- | --- | --- |
+| **A web service** | One permanent URL you open and refresh | Free tier available |
+| **Preview environments** | A separate disposable URL per pull request | **Pro workspace, ~$25/month** |
+
+If your goal is "open the terminal in a browser and click around", take the
+first — it is the normal deploy and there is nothing preview-specific to
+configure. Preview environments are for reviewing a change *before* merging it,
+and Render will not create them on a free workspace at all.
+
+### Path A — one URL you can open and refresh (free)
+
+1. Complete [step 1](#1-get-the-code-onto-the-branch-render-will-build) so
+   `main` (or your chosen branch) contains the code.
+2. Sign in at <https://dashboard.render.com> with GitHub.
+3. **New → Blueprint**.
+4. Select the repository. Render finds `render.yaml` and shows the service it
+   will create.
+5. When prompted for `LSE_API_KEY`, **leave it blank** unless you have a key.
+   The instance runs on the bundled offline demo provider and sample datasets,
+   which is enough to exercise the UI.
+6. **Apply**. First build takes several minutes (`pandas`, `numpy` and `pyarrow`
+   are large wheels).
+7. Watch the logs for the posture line:
+
+   ```
+   LSE Terminal WARNING: hosted mode: public, no login, code execution and the
+   shell disabled, visitors rate limited per client
+   ```
+
+8. Open `https://<name>.onrender.com`. That URL is stable — refresh it as often
+   as you like. On the free plan it sleeps after ~15 minutes idle, so the first
+   visit after a pause takes 30–60s to wake.
+
+Then run [step 5](#5-verify-the-deployment) to confirm it is actually healthy
+rather than merely up.
+
+### Path B — a preview per pull request (Pro)
+
+Requires a **Pro workspace (~$25/month)**. On a free or lower workspace you
+cannot enable this; the Blueprint will not create preview environments.
+
+1. Confirm the Blueprint is set up (Path A, steps 2–6) and is **synced** — the
+   Blueprint must contain `render.yaml` on its linked branch.
+2. Uncomment the preview block at the top of `render.yaml`:
+
+   ```yaml
+   previews:
+     generation: automatic    # build a preview environment for every PR
+     expireAfterDays: 3       # also tear down abandoned previews (cost control)
+   ```
+
+   Optionally uncomment the service-level `previews: plan: starter` too, so an
+   open PR bills at starter size rather than the production instance type.
+3. **Merge that change to the linked branch.** Preview settings are read from
+   the Blueprint, not from the PR, so an unmerged edit does nothing.
+4. Open a pull request **against the linked branch**. Render provisions a
+   full copy of the stack and posts the preview URL (the service gets a name
+   like `<service>-pr-<number>`). It can also be found in the dashboard.
+5. The preview is **deleted automatically when the PR is merged or closed**.
+   `expireAfterDays` additionally removes previews that have gone quiet.
+
+Useful controls, all set by editing the **PR title** (not the commit message):
+
+| Title contains | Effect |
+| --- | --- |
+| `[skip preview]` or `[preview skip]` | no preview environment for this PR |
+| `[render preview]` | create one on demand, when `generation` is `manual` |
+
+Three things about previews specifically:
+
+- **Secrets are not carried over.** Render does not copy `sync: false`
+  environment variables into preview environments, so a preview runs on the
+  demo provider even when production has an `LSE_API_KEY`. That is the safe
+  direction and needs no handling.
+- **Previews bill while they run**, prorated by the second, at the instance type
+  you set. They are not free and they do not scale to zero. Keep
+  `expireAfterDays` short and close PRs.
+- **A preview is public.** Hosted mode has no login, so anyone with the URL
+  reaches the same read surface as production — including the workspace reads
+  described in [Limitations](#8-limitations-and-risks).
+
+## 3. Confirm the two non-obvious build requirements
 
 Render installs non-editable, so the wheel must ship the UI. It does — verified
 by building it and listing the contents, all 15 `ui/static` files are present,
@@ -77,7 +176,7 @@ dependency set has actually been tested against here. If the build log reports
 the version unavailable, pick another `3.11.x` — do not jump to 3.13, which has
 not been verified.
 
-## 3. Deploy with the blueprint
+## 4. Deploy with the blueprint
 
 1. Sign in at <https://dashboard.render.com> with GitHub.
 2. **New → Blueprint**.
@@ -107,7 +206,7 @@ live, open the `https://<name>.onrender.com` URL.
 | `lset: refusing to bind '0.0.0.0' without --trusted-host` | `LSE_TERMINAL_HOSTED` is missing or not `"1"` |
 | Deploy fails with "no open ports detected" | `$PORT` was replaced with a hardcoded port |
 
-## 4. Verify the deployment
+## 5. Verify the deployment
 
 Do these in order; each rules out a whole class of problem.
 
@@ -160,7 +259,7 @@ A refusal reads:
 `422` means the request never reached the refusal because it was malformed;
 `200` means the endpoint ran and you should stop and investigate.
 
-## 5. Make it yours (optional)
+## 6. Make it yours (optional)
 
 ### A custom domain
 
@@ -196,7 +295,7 @@ Two constraints worth knowing before you rely on it: a disk is bound to one
 instance, so the service cannot scale beyond `numInstances: 1`; and Render
 restarts the service when the disk or its mount path changes.
 
-## 6. Redeploys and updates
+## 7. Redeploys and updates
 
 Every push to the deployed branch triggers a rebuild. To take an upstream
 release, merge it and push:
@@ -209,7 +308,7 @@ Expect to resolve conflicts in the files listed in
 [`ARCHITECTURE.md`](ARCHITECTURE.md#repository-relationship-to-upstream) — keep
 local changes to upstream files small for exactly this reason.
 
-## 7. Limitations and risks
+## 8. Limitations and risks
 
 Read this list rather than discovering it in production.
 

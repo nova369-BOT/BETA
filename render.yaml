@@ -7,9 +7,25 @@
 # replaced by a per-client rate limit, and there is no login by design.
 # Read SECURITY.md before pointing this at a domain you care about.
 #
-# The engine has no PORT environment handling, so the port must be passed
-# on the command line; Render injects PORT (default 10000).
+# BEFORE YOU APPLY THIS
+#   `branch:` below is `main`, so main must actually contain this code.
+#   Render reads render.yaml from the branch you select when creating the
+#   Blueprint, then switches the service to `branch:` -- if that branch is
+#   empty, the build fails with a missing pyproject.toml. Merge first, or
+#   point `branch:` at the branch you are deploying.
+#
+# PREVIEWING
+#   A normal web service (this file) gives you a URL you can open and
+#   refresh. That is all most previewing needs.
+#
+#   Per-PR *preview environments* are a separate, paid Render feature
+#   (Pro workspace, ~$25/month). On Pro, uncomment the `previews:` block
+#   below and open a pull request; see docs/DEPLOY_RENDER.md.
 ####################################################################
+
+# previews:                  # REQUIRES a Pro workspace. Uncomment on Pro.
+#   generation: automatic    # build a preview environment for every PR
+#   expireAfterDays: 3       # also tear down abandoned previews (cost control)
 
 services:
   - type: web
@@ -19,6 +35,8 @@ services:
     # the next visit takes 30-60s to wake, and persistent disks are not
     # available on it (see docs/DEPLOY_RENDER.md for the paid path).
     plan: free
+    # previews:              # REQUIRES Pro. Smaller instance for previews,
+    #   plan: starter        # so an open PR does not bill at production size.
     region: frankfurt          # closest to Europe/West Africa; oregon is default
     branch: main
     buildCommand: >-
@@ -43,5 +61,10 @@ services:
       # With it, the LSE data feed and demo account become available.
       # `sync: false` keeps the value out of this file and prompts for it in
       # the Render dashboard.
+      #
+      # Render does NOT copy sync:false values into preview environments, so
+      # a preview runs on the demo provider whether or not production has a
+      # key. That is the safe direction and needs no handling.
       - key: LSE_API_KEY
         sync: false
+
