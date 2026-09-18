@@ -38,7 +38,7 @@ import os
 #: substring test so that a host called ``localhost.evil.com`` cannot pass.
 LOOPBACK: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
-#: Endpoints the engine keeps off a shared or untrusted client.
+#: (method, path) pairs the engine keeps off a shared or untrusted client.
 #:
 #: NOT an opinion invented here. These are exactly the routes whose handlers
 #: already call ``deny_hosted()`` / ``deny_hosted_ws()`` in engine/server.py --
@@ -47,81 +47,97 @@ LOOPBACK: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 #: about what is dangerous, and routes are added to it by the same edit that
 #: adds the guard to a new handler.
 #:
+#: The METHOD is part of the key, not just the path, because the project gates
+#: per handler rather than per path. ``GET /api/workspace/{section}`` is how the
+#: UI loads the user's saved layouts and settings and is deliberately open;
+#: ``PUT`` on the same path rewrites them and is not. Matching on path alone
+#: refused the reads too, which blanked the workspace in any browser that was
+#: not on loopback.
+#:
 #: ``tests/test_access.py::test_local_only_list_stays_in_sync`` re-derives the
 #: set from server.py's AST and fails if this list drifts, so the copy cannot
 #: go stale silently.
-LOCAL_ONLY_ROUTES: tuple[str, ...] = (
-    "/api/ai/approve-request",
-    "/api/ai/chat",
-    "/api/ai/chats",
-    "/api/ai/chats/{cid}",
-    "/api/ai/install",
-    "/api/ai/instructions",
-    "/api/ai/key",
-    "/api/ai/login",
-    "/api/ai/logout",
-    "/api/ai/paste-image",
-    "/api/ai/pty",
-    "/api/ai/revert",
-    "/api/ai/settings",
-    "/api/ai/strategy",
-    "/api/ai/tool-run",
-    "/api/ai/tools",
-    "/api/ai/workspace",
-    "/api/algo/killswitch",
-    "/api/algo/start",
-    "/api/algo/stop",
-    "/api/assistant",
-    "/api/assistant/stamp",
-    "/api/assistant/usage",
-    "/api/backtest",
-    "/api/backtest/montecarlo",
-    "/api/backtest/walkforward",
-    "/api/broker/account",
-    "/api/broker/arm",
-    "/api/broker/auth/open",
-    "/api/broker/close",
-    "/api/broker/connect",
-    "/api/broker/credentials",
-    "/api/broker/disconnect",
-    "/api/broker/fills",
-    "/api/broker/list",
-    "/api/broker/modify",
-    "/api/broker/order",
-    "/api/broker/order/cancel",
-    "/api/broker/order/pending",
-    "/api/broker/orders",
-    "/api/broker/probe",
-    "/api/broker/subscribe",
-    "/api/config/lse_key",
-    "/api/data/folders",
-    "/api/data/import",
-    "/api/data/location",
-    "/api/data/open-location",
-    "/api/data/preview",
-    "/api/data/upload",
-    "/api/data/{symbol}",
-    "/api/dataviz/parse",
-    "/api/lse/databank/import",
-    "/api/ml/build-dataset",
-    "/api/ml/install",
-    "/api/ml/run-code",
-    "/api/ml/train",
-    "/api/notebooks",
-    "/api/notebooks/asset",
-    "/api/notebooks/{nid}",
-    "/api/quant/add-sample",
-    "/api/quant/fit",
-    "/api/research/pdf",
-    "/api/reveal",
-    "/api/ui/events",
-    "/api/user-indicators/preview",
-    "/api/user-indicators/{filename}",
-    "/api/workspace/{section}",
-    "/api/ws-files/delete",
-    "/api/ws-files/rename",
-    "/api/ws-files/write",
-    "/mcp",
+LOCAL_ONLY_ROUTES: tuple[tuple[str, str], ...] = (
+    ("POST", "/api/ai/approve-request"),
+    ("WEBSOCKET", "/api/ai/chat"),
+    ("GET", "/api/ai/chats"),
+    ("DELETE", "/api/ai/chats/{cid}"),
+    ("GET", "/api/ai/chats/{cid}"),
+    ("PUT", "/api/ai/chats/{cid}"),
+    ("WEBSOCKET", "/api/ai/install"),
+    ("GET", "/api/ai/instructions"),
+    ("POST", "/api/ai/instructions"),
+    ("POST", "/api/ai/key"),
+    ("WEBSOCKET", "/api/ai/login"),
+    ("POST", "/api/ai/logout"),
+    ("POST", "/api/ai/paste-image"),
+    ("WEBSOCKET", "/api/ai/pty"),
+    ("POST", "/api/ai/revert"),
+    ("POST", "/api/ai/settings"),
+    ("GET", "/api/ai/strategy"),
+    ("POST", "/api/ai/tool-run"),
+    ("GET", "/api/ai/tools"),
+    ("POST", "/api/ai/workspace"),
+    ("POST", "/api/algo/killswitch"),
+    ("POST", "/api/algo/start"),
+    ("POST", "/api/algo/stop"),
+    ("POST", "/api/assistant"),
+    ("POST", "/api/assistant/stamp"),
+    ("GET", "/api/assistant/usage"),
+    ("POST", "/api/backtest"),
+    ("POST", "/api/backtest/montecarlo"),
+    ("POST", "/api/backtest/walkforward"),
+    ("POST", "/api/broker/account"),
+    ("POST", "/api/broker/arm"),
+    ("POST", "/api/broker/auth/open"),
+    ("POST", "/api/broker/close"),
+    ("POST", "/api/broker/connect"),
+    ("POST", "/api/broker/credentials"),
+    ("POST", "/api/broker/disconnect"),
+    ("GET", "/api/broker/fills"),
+    ("GET", "/api/broker/list"),
+    ("POST", "/api/broker/modify"),
+    ("POST", "/api/broker/order"),
+    ("POST", "/api/broker/order/cancel"),
+    ("POST", "/api/broker/order/pending"),
+    ("GET", "/api/broker/orders"),
+    ("POST", "/api/broker/probe"),
+    ("POST", "/api/broker/subscribe"),
+    ("POST", "/api/config/lse_key"),
+    ("DELETE", "/api/data/folders"),
+    ("PATCH", "/api/data/folders"),
+    ("POST", "/api/data/folders"),
+    ("POST", "/api/data/import"),
+    ("GET", "/api/data/location"),
+    ("POST", "/api/data/open-location"),
+    ("POST", "/api/data/preview"),
+    ("POST", "/api/data/upload"),
+    ("DELETE", "/api/data/{symbol}"),
+    ("PATCH", "/api/data/{symbol}"),
+    ("POST", "/api/dataviz/parse"),
+    ("POST", "/api/lse/databank/import"),
+    ("POST", "/api/ml/build-dataset"),
+    ("WEBSOCKET", "/api/ml/install"),
+    ("POST", "/api/ml/run-code"),
+    ("POST", "/api/ml/train"),
+    ("POST", "/api/notebooks"),
+    ("POST", "/api/notebooks/asset"),
+    ("DELETE", "/api/notebooks/{nid}"),
+    ("PUT", "/api/notebooks/{nid}"),
+    ("POST", "/api/quant/add-sample"),
+    ("POST", "/api/quant/fit"),
+    ("GET", "/api/research/pdf"),
+    ("POST", "/api/reveal"),
+    ("GET", "/api/ui/events"),
+    ("POST", "/api/user-indicators/preview"),
+    ("DELETE", "/api/user-indicators/{filename}"),
+    ("POST", "/api/user-indicators/{filename}"),
+    ("PUT", "/api/workspace/{section}"),
+    ("POST", "/api/ws-files/delete"),
+    ("POST", "/api/ws-files/rename"),
+    ("POST", "/api/ws-files/write"),
+    ("GET", "/mcp"),
+    ("POST", "/mcp"),
 )
 
 
@@ -138,8 +154,8 @@ LOCAL_ONLY_ROUTES: tuple[str, ...] = (
 #: out would break exactly the read endpoints a proxy exists to serve.
 #: ``tests/test_access.py`` asserts each entry here is still guarded in
 #: server.py, so an exception cannot outlive its reason.
-LOCAL_ONLY_EXTRA: tuple[str, ...] = (
-    "/api/term/pty",
+LOCAL_ONLY_EXTRA: tuple[tuple[str, str], ...] = (
+    ("WEBSOCKET", "/api/term/pty"),
 )
 
 
@@ -208,10 +224,15 @@ def route_matches(pattern: str, path: str) -> bool:
                for p, q in zip(pattern_parts, path_parts))
 
 
-def is_local_only(path: str) -> bool:
-    """True when this path is one the engine keeps for the machine's user."""
-    return any(route_matches(pattern, path)
-               for pattern in LOCAL_ONLY_ROUTES + LOCAL_ONLY_EXTRA)
+def is_local_only(method: str, path: str) -> bool:
+    """True when this method+path is one the engine keeps for the machine's user.
+
+    Method is required rather than optional: defaulting it would reintroduce
+    the bug this signature exists to prevent, where a read on a path whose
+    *write* is gated was refused along with it.
+    """
+    return any(route_matches(pattern, path) and m == method.upper()
+               for m, pattern in LOCAL_ONLY_ROUTES + LOCAL_ONLY_EXTRA)
 
 
 def describe_exposure(host: str, trusted: frozenset[str]) -> str:

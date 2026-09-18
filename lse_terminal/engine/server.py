@@ -440,8 +440,12 @@ class _AccessGuard:
                 return "cross-site browser request refused"
 
         if not access.is_loopback(host):
-            path = scope.get("path", "")
-            if access.is_local_only(path) and not access.allow_remote_exec():
+            # A websocket scope carries no method; naming it here keeps the
+            # gated set addressable as (method, path) without special cases.
+            method = (scope.get("method", "GET") if scope["type"] == "http"
+                      else "WEBSOCKET")
+            if access.is_local_only(method, scope.get("path", "")) \
+                    and not access.allow_remote_exec():
                 return ("endpoint is local-only: it runs code, writes files or "
                         "moves money, and is not served to non-loopback clients "
                         "unless LSE_TERMINAL_ALLOW_REMOTE_EXEC=1")

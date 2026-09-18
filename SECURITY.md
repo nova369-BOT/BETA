@@ -70,6 +70,13 @@ routes whose handlers already call `deny_hosted()` / `deny_hosted_ws()`, plus
 from `server.py`'s AST and fails if the copy drifts, so the two cannot disagree
 about what is dangerous.
 
+**The method is part of the key, not just the path.** The project gates per
+handler, so `GET /api/workspace/{section}` — how the UI loads the user's saved
+layouts, settings and shell — is deliberately open, while `PUT` on the same path
+rewrites those files and is not. An earlier path-only version of this guard
+refused the reads too and blanked the workspace for any browser that was not on
+loopback. If you add to the gated set, record the method with the path.
+
 ## Serving the terminal beyond loopback
 
 For a reverse proxy or tunnel, name the host clients will use:

@@ -30,12 +30,19 @@ TRUSTED = "preview.example.com"
 
 
 def scope(host: str, path: str = "/api/health", origin: str | None = None,
-          kind: str = "http") -> dict:
-    """The minimum ASGI scope the guard reads."""
+          kind: str = "http", method: str = "GET") -> dict:
+    """The minimum ASGI scope the guard reads.
+
+    Method is explicit because the policy keys on it: a test that sent every
+    path as a GET would pass whether or not the write on that path is gated.
+    """
     headers = [(b"host", host.encode())]
     if origin is not None:
         headers.append((b"origin", origin.encode()))
-    return {"type": kind, "path": path, "headers": headers}
+    out = {"type": kind, "path": path, "headers": headers}
+    if kind == "http":
+        out["method"] = method
+    return out
 
 
 def guard(*trusted: str) -> _AccessGuard:
@@ -77,21 +84,44 @@ def test_placeholder_route_does_not_swallow_sibling_tree():
     Read endpoints under the same tree must stay reachable through a proxy;
     a prefix test here would lock them out.
     """
-    assert access.is_local_only("/api/data/GOLD")
-    assert not access.is_local_only("/api/data")
-    assert not access.is_local_only("/api/data/anything/else")
+    assert access.is_local_only("DELETE", "/api/data/GOLD")
+    assert not access.is_local_only("DELETE", "/api/data")
+    assert not access.is_local_only("DELETE", "/api/data/anything/else")
+
+
+def test_a_gated_write_does_not_gate_the_read_on_the_same_path():
+    """The bug this matching exists to prevent.
+
+    ``GET /api/workspace/{section}`` is how the UI loads the user's saved
+    layouts, settings and shell, and upstream deliberately leaves it open;
+    only PUT rewrites them. Matching on path alone refused the reads too, so
+    the workspace came up blank for any browser that was not on loopback.
+    The same split applies to the user-indicator files.
+    """
+    assert access.is_local_only("PUT", "/api/workspace/layouts")
+    assert not access.is_local_only("GET", "/api/workspace/layouts")
+    assert not access.is_local_only("GET", "/api/workspace/settings")
+    assert not access.is_local_only("GET", "/api/workspace/shell")
+    assert access.is_local_only("POST", "/api/user-indicators/foo.py")
+    assert not access.is_local_only("GET", "/api/user-indicators/foo.py")
+    assert not access.is_local_only("GET", "/api/user-indicators/template")
 
 
 def test_local_only_covers_the_code_execution_paths():
-    for path in ("/api/backtest", "/api/ml/run-code", "/api/term/pty",
-                 "/api/ws-files/write", "/api/ai/tool-run", "/api/broker/order"):
-        assert access.is_local_only(path), path
+    for method, path in (("POST", "/api/backtest"), ("POST", "/api/ml/run-code"),
+                         ("WEBSOCKET", "/api/term/pty"),
+                         ("POST", "/api/ws-files/write"),
+                         ("POST", "/api/ai/tool-run"),
+                         ("POST", "/api/broker/order")):
+        assert access.is_local_only(method, path), f"{method} {path}"
 
 
 def test_read_endpoints_stay_remote_reachable():
-    for path in ("/api/health", "/api/candles", "/api/instruments",
-                 "/api/indicators", "/api/providers", "/api/config", "/api/ws"):
-        assert not access.is_local_only(path), path
+    for method, path in (("GET", "/api/health"), ("GET", "/api/candles"),
+                         ("GET", "/api/instruments"), ("GET", "/api/indicators"),
+                         ("GET", "/api/providers"), ("GET", "/api/config"),
+                         ("WEBSOCKET", "/api/ws")):
+        assert not access.is_local_only(method, path), f"{method} {path}"
 
 
 def test_local_only_list_stays_in_sync():
@@ -121,7 +151,7 @@ def test_local_only_list_stays_in_sync():
                 continue
             arg = dec.args[0]
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                derived.add(arg.value)
+                derived.add((f.attr.upper(), arg.value))
     assert derived, "derivation found nothing: the check itself is broken"
     assert derived == set(access.LOCAL_ONLY_ROUTES)
 
@@ -153,7 +183,7 @@ def test_documented_exceptions_are_still_guarded():
             arg = dec.args[0]
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 guarded.add(arg.value)
-    for pattern in access.LOCAL_ONLY_EXTRA:
+    for _method, pattern in access.LOCAL_ONLY_EXTRA:
         assert pattern in guarded, (
             f"{pattern} is listed as a local-only exception but no handler for "
             "it checks hosted mode; drop it from LOCAL_ONLY_EXTRA")
@@ -200,27 +230,33 @@ def test_trusted_host_may_reach_read_endpoints_with_matching_origin():
 
 def test_trusted_host_is_refused_for_local_only_endpoints():
     """Trusting a host must not hand it a shell."""
-    for path in ("/api/ml/run-code", "/api/ws-files/write", "/api/backtest",
-                 "/api/broker/order", "/api/term/pty"):
-        assert guard(TRUSTED)._refusal(scope(TRUSTED, path)) != "", path
+    for method, path in (("POST", "/api/ml/run-code"),
+                         ("POST", "/api/ws-files/write"),
+                         ("POST", "/api/backtest"),
+                         ("POST", "/api/broker/order"),
+                         ("PUT", "/api/workspace/layouts")):
+        assert guard(TRUSTED)._refusal(scope(TRUSTED, path, method=method)) != "", path
 
 
 def test_trusted_host_reaches_local_only_endpoints_only_with_opt_in(monkeypatch):
     monkeypatch.setenv("LSE_TERMINAL_ALLOW_REMOTE_EXEC", "1")
     assert access.allow_remote_exec() is True
-    assert guard(TRUSTED)._refusal(scope(TRUSTED, "/api/ml/run-code")) == ""
+    assert guard(TRUSTED)._refusal(
+        scope(TRUSTED, "/api/ml/run-code", method="POST")) == ""
 
 
 def test_remote_exec_opt_in_does_not_trust_unnamed_hosts(monkeypatch):
     """The exec switch is not a bypass of the host allowlist."""
     monkeypatch.setenv("LSE_TERMINAL_ALLOW_REMOTE_EXEC", "1")
-    assert guard(TRUSTED)._refusal(scope(FOREIGN, "/api/ml/run-code")) != ""
+    assert guard(TRUSTED)._refusal(
+        scope(FOREIGN, "/api/ml/run-code", method="POST")) != ""
 
 
 def test_loopback_keeps_local_only_endpoints_without_any_env(monkeypatch):
     """The local user is the one who installed the app; no gate for them."""
     monkeypatch.delenv("LSE_TERMINAL_ALLOW_REMOTE_EXEC", raising=False)
-    assert guard()._refusal(scope("127.0.0.1:7787", "/api/ml/run-code")) == ""
+    assert guard()._refusal(
+        scope("127.0.0.1:7787", "/api/ml/run-code", method="POST")) == ""
 
 
 def test_websocket_scope_is_judged_by_the_same_rules():

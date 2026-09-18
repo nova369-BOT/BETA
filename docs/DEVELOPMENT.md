@@ -38,6 +38,18 @@ python -m venv .venv
 Loopback only, by default and on purpose. To serve beyond loopback you must name
 the host you are serving; see [`../SECURITY.md`](../SECURITY.md).
 
+In a hosted sandbox the hostname is assigned by the platform rather than chosen,
+so derive it:
+
+```sh
+tools/preview.sh                 # e2b: computes <port>-<E2B_SANDBOX_ID>.e2b.app
+LSET_BIN=.venv/bin/lset tools/preview.sh
+```
+
+That serves the read and data surface only. Code execution, the shell and
+workspace writes stay refused, because a preview URL is not a trusted client.
+Opt in knowingly with `LSE_PREVIEW_ARGS=--allow-remote-exec tools/preview.sh`.
+
 ## Test
 
 ```sh
