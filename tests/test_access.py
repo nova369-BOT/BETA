@@ -297,6 +297,33 @@ def test_allow_remote_exec_is_off_otherwise(monkeypatch, value):
     assert access.allow_remote_exec() is False
 
 
+def test_hosted_mode_does_not_require_a_trusted_host(monkeypatch, tmp_path, capsys):
+    """The regression this test exists for.
+
+    Hosted mode installs no loopback guard -- the public domain is the
+    legitimate Host, and there is no hostname to name at build time on a
+    platform like Render. Requiring --trusted-host there made a hosted deploy
+    fail at boot with an error about a guard that was not even running.
+    """
+    from lse_terminal import cli
+    import uvicorn
+    started = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: started.update(kw))
+    monkeypatch.setenv("LSE_TERMINAL_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("LSE_TERMINAL_HOSTED", "1")
+    monkeypatch.delenv("LSE_TERMINAL_TRUSTED_HOSTS", raising=False)
+    assert cli.main(["--host", "0.0.0.0", "--port", "7797", "--no-browser"]) == 0
+    assert started["host"] == "0.0.0.0"
+
+
+def test_hosted_exposure_line_says_what_it_is(monkeypatch):
+    """The log line must not claim a guard that hosted mode does not install."""
+    monkeypatch.setenv("LSE_TERMINAL_HOSTED", "1")
+    text = access.describe_exposure("0.0.0.0", frozenset())
+    assert "hosted mode" in text and "rate limited" in text
+    assert "trusted host(s)" not in text
+
+
 def test_describe_exposure_names_the_hosts_and_the_limits(monkeypatch):
     monkeypatch.delenv("LSE_TERMINAL_ALLOW_REMOTE_EXEC", raising=False)
     assert "loopback only" in access.describe_exposure("127.0.0.1", frozenset())

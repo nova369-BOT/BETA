@@ -1,0 +1,47 @@
+####################################################################
+# Render blueprint for LSE Terminal in HOSTED mode.
+#
+# Hosted mode is the project's own posture for a public instance, and it is
+# not the same thing as exposing the desktop app: the code-executing
+# endpoints refuse themselves in their handlers, the loopback guard is
+# replaced by a per-client rate limit, and there is no login by design.
+# Read SECURITY.md before pointing this at a domain you care about.
+#
+# The engine has no PORT environment handling, so the port must be passed
+# on the command line; Render injects PORT (default 10000).
+####################################################################
+
+services:
+  - type: web
+    name: lse-terminal
+    runtime: python
+    # Free is fine to try it. Note it spins down after ~15 minutes idle, so
+    # the next visit takes 30-60s to wake, and persistent disks are not
+    # available on it (see docs/DEPLOY_RENDER.md for the paid path).
+    plan: free
+    region: frankfurt          # closest to Europe/West Africa; oregon is default
+    branch: main
+    buildCommand: >-
+      pip install "git+https://github.com/londonstrategicedge/brue-connect.git@671d94bf6abbecfa7407902ec2cedd5630a8726f"
+      && pip install .
+    startCommand: lset --host 0.0.0.0 --port $PORT --no-browser
+    healthCheckPath: /api/health
+    envVars:
+      # Pinned because the packages this depends on are only verified here.
+      # If the build log says the version is unavailable, move to another
+      # 3.11.x rather than jumping to 3.13.
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+      # The switch that makes this a hosted instance. Without it the engine
+      # installs the loopback guard and will refuse to start bound to 0.0.0.0.
+      - key: LSE_TERMINAL_HOSTED
+        value: "1"
+
+      # Optional. Without it the instance serves the offline demo provider and
+      # the bundled sample datasets, which is enough for the charts to work.
+      # With it, the LSE data feed and demo account become available.
+      # `sync: false` keeps the value out of this file and prompts for it in
+      # the Render dashboard.
+      - key: LSE_API_KEY
+        sync: false

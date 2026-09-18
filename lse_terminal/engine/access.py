@@ -240,7 +240,17 @@ def describe_exposure(host: str, trusted: frozenset[str]) -> str:
 
     Returned rather than printed so the CLI owns the output stream, and so
     tests can assert on the wording without capturing stdout.
+
+    Hosted mode is described separately because it is a genuinely different
+    posture rather than a variant of the trusted-host one: the loopback guard
+    is not installed there (the public domain IS the legitimate Host), so what
+    holds the code-executing endpoints back is deny_hosted() plus the rate
+    limit, not the host allowlist. Reporting "trusted host(s) []" for a public
+    deployment would understate what is actually running.
     """
+    if _truthy(os.environ.get("LSE_TERMINAL_HOSTED", "")):
+        return ("hosted mode: public, no login, code execution and the shell "
+                "disabled, visitors rate limited per client")
     if is_loopback(host):
         return "serving on loopback only; remote clients are refused"
     exec_note = ("including code execution and the shell"

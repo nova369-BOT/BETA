@@ -94,6 +94,43 @@ Only add `--allow-remote-exec` if those clients genuinely need to run code. Doin
 so means anyone who can reach that hostname can execute code as the user running
 the engine.
 
+## Hosted mode
+
+`LSE_TERMINAL_HOSTED=1` is the posture for a public instance, and it is a
+different mechanism from the one above rather than a variant of it. This guard
+is **not installed** in hosted mode: the public domain is the legitimate `Host`,
+so there is nothing to allowlist and the hostname is not known at build time.
+The protections are instead:
+
+- the code-executing, file-writing and order-placing handlers call
+  `deny_hosted()` in their own bodies and return 403,
+- `_HostedRateLimit` applies a per-client token bucket,
+- the UI hides the corresponding controls via `/api/config`.
+
+Two consequences are worth stating plainly, because both are load-bearing for
+anyone deploying this publicly. See
+[`docs/DEPLOY_RENDER.md`](docs/DEPLOY_RENDER.md) for the deployment view.
+
+**1. There is no authentication in hosted mode.** Anyone who can reach the
+service gets the read and data surface. Hosted mode is a public chart viewer,
+not a multi-user product.
+
+**2. Workspace reads are not gated.** The project gates
+`POST /api/ws-files/{write,rename,delete}` but not `GET /api/ws-files` or
+`GET /api/ws-files/read`. Measured against a hosted-mode instance: the listing
+returns 200 including the absolute `root` and `data_root` paths, and the read
+returns file contents. On a fresh deployment the workspace holds only the
+starter strategies that are already public in this repository, so the immediate
+exposure is limited — but anything private placed there is readable by any
+visitor. Not fixed here: it is an upstream behaviour change that cannot be
+browser-verified in this environment.
+
+**3. The rate limit trusts client-supplied headers.** `_HostedRateLimit`
+prefers `cf-connecting-ip`, then the first `X-Forwarded-For` hop, then the
+socket peer. The edge terminating TLS must **overwrite** `X-Forwarded-For`
+rather than append to a client-supplied value, or a client can rotate the header
+and escape the bucket. Verify this for whichever platform fronts the app.
+
 ## Known limitations
 
 - **There is no authentication.** Disclosure to a trusted host is controlled,

@@ -273,9 +273,18 @@ def main(argv: list[str] | None = None) -> int:
     # --host 0.0.0.0` silently handed a shell to anything that could reach
     # the port, because the guard that was supposed to stop it keyed on the
     # Host header, which any non-browser client sets freely.
+    #
+    # Hosted mode is the deliberate exception, and not a loophole. There the
+    # guard is not installed at all -- the public domain IS the legitimate
+    # Host, so there is no hostname to name at build time -- and the danger is
+    # handled a different way: the code-executing endpoints call deny_hosted()
+    # in their own handlers and a per-client rate limit covers the rest. See
+    # SECURITY.md. Requiring --trusted-host here would only have made a hosted
+    # deploy fail at boot with an error about a guard that is not running.
+    hosted = os.environ.get("LSE_TERMINAL_HOSTED") == "1"
     trusted = set(access.trusted_hosts())
     trusted.update(h.strip().lower() for h in args.trusted_host if h.strip())
-    if not access.is_loopback(args.host) and not trusted:
+    if not access.is_loopback(args.host) and not trusted and not hosted:
         sys.stderr.write(
             f"lset: refusing to bind {args.host!r} without --trusted-host.\n"
             "\n"
@@ -286,7 +295,10 @@ def main(argv: list[str] | None = None) -> int:
             f"               --trusted-host <the hostname in the URL>\n"
             "\n"
             "      Add --allow-remote-exec only if those clients genuinely\n"
-            "      need code execution and the shell.\n")
+            "      need code execution and the shell.\n"
+            "\n"
+            "      Serving this publicly instead? Set LSE_TERMINAL_HOSTED=1,\n"
+            "      which removes those endpoints and rate limits visitors.\n")
         return 2
     if trusted:
         os.environ["LSE_TERMINAL_TRUSTED_HOSTS"] = ",".join(sorted(trusted))

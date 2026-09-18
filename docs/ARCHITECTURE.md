@@ -46,15 +46,41 @@ The bundled `demo` provider is fully offline and is what makes the app usable
 with no key, no imports and no network. It is the correct target for tests and
 demos; it is not a substitute for live data and does not pretend to be.
 
-## Frontend (`frontend/`)
+## Frontend — and its unusual source split
 
-React 18 + TypeScript + Vite + Tailwind + Radix, charts via a hand-written
-canvas renderer published as `window.LSEChart`.
+There are **two** frontend artifacts, and only one of them has source here.
+This is the single most surprising thing about the repository, so read it before
+planning UI work.
 
-The build output is **committed** to `lse_terminal/ui/static/` (`app.js`,
-`style.css`, `chart/chart.js`) so a clone runs without a Node toolchain. The
-sourcemaps and the large `ts_truth.json` parity fixture are gitignored and
-regenerated.
+| Artifact | Size | Owns | Source in this repo? |
+| --- | --- | --- | --- |
+| `ui/static/app.js` | 17,054 lines | The terminal **shell**: MARKETS / BACKTEST / MY DATA, sidebar, keybar | **No — committed artifact** |
+| `ui/static/chart/chart.js` | 4.3 MB | The **chart engine**, exposed as `window.LSEChart` | **Yes — `frontend/src`** |
+
+`frontend/vite.config.ts` builds in library mode with
+`entry: src/mount.tsx`, `name: 'LSEChart'`, `fileName: 'chart.js'`, emitted into
+`lse_terminal/ui/static/chart/`. `mount.tsx` says so directly:
+
+> The terminal's shell (`ui/static/app.js`) is plain JavaScript and owns the
+> MARKETS / BACKTEST / MY DATA sections, the sidebar and the keybar. This entry
+> point exposes an imperative API on `window.LSEChart` so the shell can mount
+> the React chart into its existing `#chart` element, without the shell needing
+> React.
+
+So:
+
+- **The Python engine is fully editable.**
+- **The chart is fully editable** and rebuilds into `chart/chart.js`.
+- **The shell is not buildable here.** `app.js` is readable, commented,
+  unminified JavaScript, so it can be patched by hand — but `npm run build` does
+  not regenerate it, and a hand patch is a fork you must re-apply on every
+  upstream merge. Anything that needs durable shell changes has to happen
+  upstream, or the shell has to be replaced with one we own.
+
+The artifacts are committed so a clone runs without a Node toolchain, and both
+are included in the built wheel — a non-editable `pip install .` ships the whole
+UI, which is what makes containerised deployment work. Sourcemaps and the large
+`ts_truth.json` parity fixture are gitignored and regenerated.
 
 ## Packaging (`desktop/`)
 
@@ -102,9 +128,12 @@ Measured, not estimated. These are the things most likely to hurt next.
    tests in `tests/test_api.py` reference a broker named `paper-fast` that no
    installed component provides, so they fail in any environment without that
    broker provisioned. See `docs/DEVELOPMENT.md`.
-4. **The `frontend` package is not a workspace member.** `pyproject.toml`
-   requires Python only; a Node toolchain is needed separately to rebuild the UI,
-   and nothing enforces that the committed bundle matches `frontend/src`.
+4. **The `frontend` package is not a workspace member, and only builds half the
+   UI.** `pyproject.toml` requires Python only, so a Node toolchain is needed
+   separately, and nothing enforces that `chart/chart.js` matches
+   `frontend/src`. More seriously, the shell (`app.js`) has no build source at
+   all — see the frontend section above. Nothing detects drift between a rebuilt
+   chart and the shell that consumes it.
 5. **Hosted/lockdown policy is expressed two ways.** Most endpoints call
    `deny_hosted()`, but `/api/term/pty` checks `hosted` inline. That
    inconsistency is why `access.LOCAL_ONLY_EXTRA` has to exist. Normalising on
