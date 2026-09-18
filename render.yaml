@@ -1,0 +1,70 @@
+####################################################################
+# Render blueprint for LSE Terminal in HOSTED mode.
+#
+# Hosted mode is the project's own posture for a public instance, and it is
+# not the same thing as exposing the desktop app: the code-executing
+# endpoints refuse themselves in their handlers, the loopback guard is
+# replaced by a per-client rate limit, and there is no login by design.
+# Read SECURITY.md before pointing this at a domain you care about.
+#
+# BEFORE YOU APPLY THIS
+#   `branch:` below is `main`, so main must actually contain this code.
+#   Render reads render.yaml from the branch you select when creating the
+#   Blueprint, then switches the service to `branch:` -- if that branch is
+#   empty, the build fails with a missing pyproject.toml. Merge first, or
+#   point `branch:` at the branch you are deploying.
+#
+# PREVIEWING
+#   A normal web service (this file) gives you a URL you can open and
+#   refresh. That is all most previewing needs.
+#
+#   Per-PR *preview environments* are a separate, paid Render feature
+#   (Pro workspace, ~$25/month). On Pro, uncomment the `previews:` block
+#   below and open a pull request; see docs/DEPLOY_RENDER.md.
+####################################################################
+
+# previews:                  # REQUIRES a Pro workspace. Uncomment on Pro.
+#   generation: automatic    # build a preview environment for every PR
+#   expireAfterDays: 3       # also tear down abandoned previews (cost control)
+
+services:
+  - type: web
+    name: lse-terminal
+    runtime: python
+    # Free is fine to try it. Note it spins down after ~15 minutes idle, so
+    # the next visit takes 30-60s to wake, and persistent disks are not
+    # available on it (see docs/DEPLOY_RENDER.md for the paid path).
+    plan: free
+    # previews:              # REQUIRES Pro. Smaller instance for previews,
+    #   plan: starter        # so an open PR does not bill at production size.
+    region: frankfurt          # closest to Europe/West Africa; oregon is default
+    branch: main
+    buildCommand: >-
+      pip install "git+https://github.com/londonstrategicedge/brue-connect.git@671d94bf6abbecfa7407902ec2cedd5630a8726f"
+      && pip install .
+    startCommand: lset --host 0.0.0.0 --port $PORT --no-browser
+    healthCheckPath: /api/health
+    envVars:
+      # Pinned because the packages this depends on are only verified here.
+      # If the build log says the version is unavailable, move to another
+      # 3.11.x rather than jumping to 3.13.
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+      # The switch that makes this a hosted instance. Without it the engine
+      # installs the loopback guard and will refuse to start bound to 0.0.0.0.
+      - key: LSE_TERMINAL_HOSTED
+        value: "1"
+
+      # Optional. Without it the instance serves the offline demo provider and
+      # the bundled sample datasets, which is enough for the charts to work.
+      # With it, the LSE data feed and demo account become available.
+      # `sync: false` keeps the value out of this file and prompts for it in
+      # the Render dashboard.
+      #
+      # Render does NOT copy sync:false values into preview environments, so
+      # a preview runs on the demo provider whether or not production has a
+      # key. That is the safe direction and needs no handling.
+      - key: LSE_API_KEY
+        sync: false
+
